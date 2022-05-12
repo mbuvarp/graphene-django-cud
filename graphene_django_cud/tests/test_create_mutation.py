@@ -13,6 +13,7 @@ from graphene_django_cud.tests.factories import (
 )
 from graphene_django_cud.tests.dummy_query import DummyQuery
 from graphene_django_cud.tests.models import User, Cat, Dog, DogRegistration
+from graphene_django_cud.tests.util import create_mutation_schema
 from graphene_django_cud.util import disambiguate_id
 
 
@@ -688,10 +689,7 @@ class TestCreateWithManyToManyThroughModel(TestCase):
         owner = UserFactory.create()
         other_user = UserFactory.create()
 
-        class Mutations(graphene.ObjectType):
-            create_cat = CreateCatMutation.Field()
-
-        schema = Schema(query=DummyQuery, mutation=Mutations)
+        schema = create_mutation_schema(CreateCatMutation)
         mutation = """
             mutation CreateCat(
                 $input: CreateCatInput!
@@ -736,3 +734,43 @@ class TestCreateWithManyToManyThroughModel(TestCase):
             cat["catUserRelations"]["edges"][0]["node"]["user"]["id"],
             to_global_id("UserNode", other_user.id),
         )
+
+
+class TestCreateMutationAfterMutate(TestCase):
+    def test__create_mutation_after_mutate__includes_created_object(self):
+        # This registers the UserNode type
+        from .schema import UserNode  # noqa: F401
+
+        class CreateCatMutation(DjangoCreateMutation):
+            class Meta:
+                model = Cat
+
+            @classmethod
+            def after_mutate(cls, root, info, input, obj, return_data):
+                self.assertEqual(obj.name, "Simba")
+                self.assertEqual(obj.name, input["name"])
+                self.assertEqual(obj.name, return_data["cat"].name)
+
+        owner = UserFactory.create()
+
+        schema = create_mutation_schema(CreateCatMutation)
+        mutation = """
+            mutation CreateCat(
+                $input: CreateCatInput!
+            ) {
+                createCat(input: $input) { cat { id, name } }
+            }
+        """
+        result = schema.execute(
+            mutation,
+            variables={
+                "input": {
+                    "name": "Simba",
+                    "owner": to_global_id("UserNode", owner.id),
+                }
+            },
+        )
+
+        self.assertIsNone(result.errors)
+        cat = result.data["createCat"]["cat"]
+        self.assertEqual(cat["name"], "Simba")
